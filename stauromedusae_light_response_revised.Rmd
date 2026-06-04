@@ -1,0 +1,1097 @@
+---
+title: "Light Response in Stalked Jellyfish (*Haliclystus* sp.): Behavioural Analysis"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 8,
+  fig.height = 5,
+  dpi = 150
+)
+```
+
+---
+
+# Overview
+
+This document contains the full statistical analysis for the study of light-evoked behavior in stalked jellyfish. The analysis is divided into two parts:
+
+1. **Control experiment** - spontaneous motor activity under two ambient light intensities (bright and dim), with no directed stimulus.
+2. **Stimulus experiment** - probability of a motor response to focal illumination with red, green, and violet light applied to two body regions (calyx and stalk).
+
+All data files (`control.xlsx`, `experiment.xlsx`) are available in the same repository directory as this script.
+
+---
+
+# 1. Setup
+
+## 1.1 Load packages
+
+```{r libraries}
+library(readxl)       # reading .xlsx files
+library(ggplot2)      # plotting
+library(dplyr)        # data manipulation
+library(tidyr)        # reshaping data
+library(patchwork)    # combining ggplot panels
+library(lme4)         # linear and generalised linear mixed-effects models
+library(lmerTest)     # p-values for lmer() via Satterthwaite/Kenward-Roger df
+library(emmeans)      # estimated marginal means and post-hoc contrasts
+library(car)          # Anova() with type III SS
+library(DHARMa)       # simulation-based residual diagnostics for GLMs/GLMMs
+library(performance)  # icc(), r2()
+library(brglm2)       # bias-reduced logistic regression (brglmFit)
+library(writexl)      # export .xlsx summary tables
+library(ggsignif)     # significance brackets on ggplot
+library(svglite)      # export .svg figures
+```
+
+## 1.2 Shared colour palettes
+
+```{r palettes}
+# Movement types (control experiment)
+type_colors <- c(
+  rot   = "#e86bb6",   # calyx rotation
+  stalk = "#85d65c",   # stalk contraction
+  full  = "#64b3e8",   # full contraction
+  calyx = "#f2a95a",   # calyx contraction
+  fall  = "gray30"     # detachment
+)
+
+# Light spectra (stimulus experiment)
+light_colors <- c(
+  R = "#D4606A",
+  G = "#6A9E50",
+  V = "#8A5AAC"
+)
+
+# Activity budget states
+state_colors <- c(Contraction = "gray30", Relaxation = "gray80")
+```
+
+## 1.3 Shared plot theme
+
+```{r shared-theme}
+# Single theme applied to all figures throughout the script
+shared_theme <- theme_bw() +
+  theme(
+    legend.position  = "none",
+    strip.background = element_rect(fill = "gray95"),
+    strip.text       = element_text(size = 11, face = "bold"),
+    axis.text.x      = element_text(size = 10),
+    axis.text.y      = element_text(size = 10),
+    plot.title       = element_text(size = 12, face = "bold")
+  )
+```
+
+---
+
+# 2. Control Experiment
+
+## 2.1 Load and prepare data
+
+The control dataset (`control.xlsx`) contains **334 movement events** recorded across **8 specimens** observed under two ambient light conditions: bright (specimens 1–4, 178 events) and dim (specimens 5–8, 156 events). The design is **between-subjects**: each specimen was observed under one light condition only. 
+Each row represents a single movement event characterised by start time, stop time, movement type, specimen ID, and light condition.
+
+**Variables:**
+
+| Column | Type | Description |
+|---|---|---|
+| `exp` | character | Experiment ID |
+| `light` | factor | Ambient light condition: `br` (bright) or `dim` (dim) |
+| `spec` | factor | Specimen ID (1–8) |
+| `start` | numeric | Event start time (s) |
+| `stop` | numeric | Event stop time (s) |
+| `type` | factor | Movement type: `rot`, `stalk`, `calyx`, or `full` |
+| `duration` | numeric | Event duration (s), computed as `stop - start` |
+
+```{r control-load}
+data <- read_excel("data/control.xlsx")
+
+data <- data %>%
+  mutate(
+    duration = stop - start,
+    type     = factor(type,  levels = c("rot", "stalk", "calyx", "full")),
+    light    = factor(light, levels = c("br", "dim")),
+    spec     = factor(spec)
+  )
+
+# Sample size summary: events per specimen and light condition
+cat("Events per specimen and light condition:\n")
+data %>%
+  count(spec, light) %>%
+  pivot_wider(names_from = light, values_from = n, values_fill = 0) %>%
+  arrange(spec)
+
+cat("\nEvents per movement type and light condition:\n")
+data %>%
+  count(type, light) %>%
+  pivot_wider(names_from = light, values_from = n, values_fill = 0)
+```
+
+## 2.2 Timeline plot
+
+Each colored bar represents one movement event; rows are individual specimens; panels separate light conditions.
+
+```{r control-timeline, fig.height=6}
+data_plot <- data %>%
+  mutate(
+    type_num = as.numeric(type),
+    spec_num = as.numeric(spec),
+    ymin = spec_num + (type_num - 2.5) * 0.15 - 0.06,
+    ymax = spec_num + (type_num - 2.5) * 0.15 + 0.06
+  )
+
+grid_lines_data <- data_plot %>%
+  group_by(light) %>%
+  summarise(
+    y_lines = list(seq(min(spec_num) - 0.5, max(spec_num) + 0.5, by = 1)),
+    .groups = "drop"
+  ) %>%
+  tidyr::unnest(y_lines)
+
+p_timeline <- ggplot(data_plot) +
+  geom_hline(data = grid_lines_data, aes(yintercept = y_lines),
+             color = "gray70", linewidth = 0.8) +
+  geom_rect(aes(xmin = start, xmax = stop,
+                ymin = ymin, ymax = ymax, fill = type)) +
+  scale_fill_manual(
+    name   = "Movement type",
+    values = type_colors,
+    labels = c(rot   = "Calyx rotation",
+               stalk = "Stalk contraction",
+               calyx = "Calyx contraction",
+               full  = "Full contraction")
+  ) +
+  scale_y_reverse(
+    breaks = function(lims) seq(ceiling(min(lims)), floor(max(lims))),
+    name   = "Specimen",
+    expand = expansion(add = 0.2)
+  ) +
+  facet_wrap(~light, ncol = 1, scales = "free_y",
+             labeller = labeller(
+               light = c(br = "Bright light", dim = "Dim light")
+             )) +
+  labs(x = "Time (s)") +
+  theme_bw() +
+  theme(
+    strip.background   = element_rect(fill = "gray95"),
+    strip.text         = element_text(size = 11, face = "bold"),
+    axis.text          = element_text(size = 10),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_line(color = "gray90", linewidth = 0.3)
+  )
+
+print(p_timeline)
+ggsave("figures/intervals.png", p_timeline, width = 12, height = 6, dpi = 500)
+ggsave("figures/intervals.svg", p_timeline, width = 12, height = 6, dpi = 500)
+```
+
+## 2.3 Descriptive statistics
+
+Mean and SD of movement duration by light condition and movement type.
+
+```{r control-descriptive}
+stats_table <- data %>%
+  group_by(light, type) %>%
+  summarise(
+    n             = n(),
+    mean_duration = round(mean(duration), 2),
+    SD_duration   = round(sd(duration),   2),
+    .groups = "drop"
+  )
+
+stats_table
+
+write_xlsx(as.data.frame(stats_table), "results/duration_control.xlsx")
+```
+
+## 2.4 Summary figures
+
+Three panels: (A) total movement counts by type and light condition, (B) duration distributions, (C) proportion of observation window spent active and resting.
+
+```{r control-figures, fig.height=12}
+light_labels <- c(br = "Bright light", dim = "Dim light")
+type_labels  <- c(rot   = "Calyx\nrotation",
+                  stalk = "Stalk\ncontraction",
+                  calyx = "Calyx\ncontraction",
+                  full  = "Full\ncontraction")
+
+# Panel A: movement counts
+count_data <- data %>% count(light, type)
+
+pA <- ggplot(count_data, aes(x = type, y = n, fill = type)) +
+  geom_col(width = 0.7, alpha = 0.9, color = "gray20") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3.5, fontface = "bold") +
+  facet_wrap(~light, labeller = as_labeller(light_labels)) +
+  scale_fill_manual(values = type_colors) +
+  scale_x_discrete(labels = type_labels) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)),
+                     name = "Total count") +
+  labs(title = "A. Movement counts", x = "") +
+  shared_theme
+
+# Panel B: movement duration
+pB <- ggplot(data, aes(x = type, y = duration, fill = type)) +
+  geom_boxplot(alpha = 0.9, linewidth = 0.4,
+               outlier.size = 1.5, outlier.alpha = 0.6,
+               color = "gray20") +
+  facet_wrap(~light, labeller = as_labeller(light_labels)) +
+  scale_fill_manual(values = type_colors) +
+  scale_x_discrete(labels = type_labels) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)),
+                     name = "Duration (s)") +
+  labs(title = "B. Movement duration", x = "") +
+  shared_theme
+
+# Panel C: activity budget
+OBS_WINDOW_SEC <- 3750
+
+avg_budget <- data %>%
+  group_by(light, spec) %>%
+  summarise(active = sum(duration), .groups = "drop") %>%
+  mutate(active_exceeds_window = active > OBS_WINDOW_SEC)
+
+# Sanity check: active time must not exceed the observation window.
+# If triggered, inspect raw data for overlapping events or entry errors.
+if (any(avg_budget$active_exceeds_window)) {
+  warning(
+    "Active time exceeds observation window for: ",
+    paste(avg_budget$spec[avg_budget$active_exceeds_window], collapse = ", "),
+    "\nCheck for overlapping movement events or data entry errors."
+  )
+}
+
+avg_budget <- avg_budget %>%
+  mutate(
+    pct_active = active / OBS_WINDOW_SEC * 100,
+    pct_relax  = (OBS_WINDOW_SEC - active) / OBS_WINDOW_SEC * 100
+  ) %>%
+  group_by(light) %>%
+  summarise(
+    Contraction = mean(pct_active),
+    Relaxation  = mean(pct_relax),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(c(Contraction, Relaxation),
+               names_to  = "State",
+               values_to = "Percentage")
+
+pC <- ggplot(avg_budget, aes(x = State, y = Percentage, fill = State)) +
+  geom_col(width = 0.6, alpha = 0.9, color = "gray20") +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")),
+            vjust = -0.5, size = 3.5, fontface = "bold") +
+  facet_wrap(~light, labeller = as_labeller(light_labels)) +
+  scale_fill_manual(values = state_colors) +
+  scale_x_discrete(labels = c(Contraction = "Active", Relaxation = "Resting")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)),
+                     limits = c(0, 100),
+                     name   = "Proportion of time (%)") +
+  labs(title = "C. Time spent active and resting", x = "") +
+  shared_theme
+
+combined_control <- pA / pB / pC
+print(combined_control)
+ggsave("figures/control_combined.png", combined_control,
+       width = 8, height = 12, dpi = 500)
+ggsave("figures/control_combined.svg", combined_control,
+       width = 8, height = 12, dpi = 500)
+```
+
+---
+
+# 3. Control - Statistical Analysis
+
+## 3.1 Effect of light intensity on movement duration
+
+Movement duration is modeled using a linear mixed-effects model (LMM) with specimen as a random intercept (`(1 | spec)`). A random intercept is required because each specimen contributed multiple movement events (repeated measures), making observations within a specimen non-independent. Log-transformation is applied to the response variable to satisfy the normality assumption for LMM residuals, which is standard for right-skewed duration data; this is verified via QQ-plot and residuals-vs-fitted plot before proceeding to inference.
+Calyx contraction (`type = "calyx"`) is excluded from the model: it was observed 4 times under bright light and 0 times under dim light. Complete absence in one condition makes it impossible to estimate the effect of light intensity for this movement type.
+
+```{r lmer-duration}
+# Movement counts by type and light condition
+data %>%
+  count(type, light) %>%
+  pivot_wider(names_from = light, values_from = n, values_fill = 0)
+
+data_filtered <- data %>% filter(type != "calyx")
+
+# Initial model on untransformed duration - used only for residual inspection
+model1 <- lmer(duration ~ light * type + (1 | spec), data = data_filtered)
+```
+
+### Residual diagnostics
+
+```{r lmer-diagnostics, fig.height=4}
+# Log-transformation applied to correct right skew in residuals
+model1_log <- lmer(log(duration) ~ light * type + (1 | spec),
+                   data = data_filtered)
+
+par(mfrow = c(1, 2))
+qqnorm(resid(model1_log), main = "QQ-plot: log(duration) model")
+qqline(resid(model1_log), col = "red")
+
+plot(fitted(model1_log), resid(model1_log),
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+par(mfrow = c(1, 1))
+```
+
+### Model summary and ANOVA
+
+```{r lmer-anova}
+summary(model1_log)
+
+# Type III tests: each effect is tested in the presence of all others
+# Preferred over Type I (sequential) SS for unbalanced data, where Type I results depend on the order of terms in the formula
+Anova(model1_log, type = "III")
+
+# ICC: proportion of total variance attributable to between-specimen differences
+icc(model1_log)
+
+# Marginal R² (fixed effects only) and conditional R² (fixed + random effects)
+r2(model1_log)
+```
+
+### Post-hoc contrasts (bright vs. dim within each movement type)
+
+Contrasts are estimated on the response scale via back-transformation (geometric mean ratios) using Kenward-Roger degrees of freedom.
+
+```{r lmer-emmeans}
+em_log <- emmeans(model1_log, ~ light | type, type = "response")
+pairs(em_log)
+```
+
+### Figure: duration by light condition and movement type
+
+```{r control-duration-plot, fig.height=5}
+type_labels_sub <- c(rot   = "Calyx rotation",
+                     stalk = "Stalk contraction",
+                     full  = "Full contraction")
+
+# P-values extracted programmatically from post-hoc contrasts
+annotation_df <- as.data.frame(pairs(em_log)) %>%
+  mutate(
+    type  = c("rot", "stalk", "full"),
+    label = paste0("p = ", round(p.value, 3))
+  ) %>%
+  left_join(
+    data_filtered %>%
+      group_by(type) %>%
+      summarise(y = max(duration) * 1.15, .groups = "drop"),
+    by = "type"
+  )
+
+p_dur_stats <- ggplot(data_filtered,
+                      aes(x = light, y = duration, fill = type)) +
+  geom_boxplot(alpha = 0.9, linewidth = 0.4,
+               outlier.shape = NA, color = "gray20") +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+  facet_wrap(~type, scales = "free_y",
+             labeller = as_labeller(type_labels_sub)) +
+  geom_text(data = annotation_df,
+            aes(x = 1.5, y = y, label = label),
+            inherit.aes = FALSE, size = 4, fontface = "bold") +
+  scale_fill_manual(values = type_colors) +
+  scale_x_discrete(labels = c(br = "Bright", dim = "Dim")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)),
+                     name = "Duration (s)") +
+  labs(x = NULL) +
+  shared_theme
+
+print(p_dur_stats)
+ggsave("figures/control_duration_stats.png", p_dur_stats,
+       width = 10, height = 4, dpi = 500)
+ggsave("figures/control_duration_stats.svg", p_dur_stats,
+       width = 10, height = 4, dpi = 500)
+```
+
+## 3.2 Effect of light intensity on movement frequency
+
+Per-specimen movement counts were compared between light conditions using the Wilcoxon rank-sum test (Mann-Whitney U), chosen due to small sample sizes and non-normal count distributions. The control experiment follows a between-subjects design (specimens 1–4: bright light; specimens 5–8: dim light), so unpaired tests are appropriate. Separate tests were run for each of the four movement types; raw p-values were adjusted for multiple comparisons using the Benjamini-Hochberg (FDR) procedure.
+
+```{r wilcoxon-counts}
+count_data <- data %>%
+  count(spec, light, type) %>%
+  mutate(spec = factor(spec))
+
+# Verify the between-subjects assumption: each specimen must appear in exactly one light condition
+spec_light_check <- count_data %>%
+  distinct(spec, light) %>%
+  count(spec) %>%
+  filter(n > 1)
+
+if (nrow(spec_light_check) > 0) {
+  stop(
+    "The following specimens appear in more than one light condition: ",
+    paste(spec_light_check$spec, collapse = ", "),
+    "\nReview experimental design before proceeding."
+  )
+}
+
+# Add explicit zeros for movement types not observed per specimen
+count_data_fixed <- count_data %>%
+  ungroup() %>%
+  complete(spec, type, fill = list(n = 0)) %>%
+  left_join(
+    count_data %>% distinct(spec, light),
+    by = "spec"
+  ) %>%
+  mutate(light = coalesce(light.x, light.y)) %>%
+  select(-light.x, -light.y)
+
+# Wilcoxon rank-sum tests per movement type with BH correction
+wilcox_results <- lapply(
+  c("rot", "stalk", "calyx", "full"),
+  function(mv) {
+    d <- filter(count_data_fixed, type == mv)
+    w <- wilcox.test(n ~ light, data = d, exact = FALSE)
+    data.frame(type = mv, W = w$statistic, p_raw = round(w$p.value, 3))
+  }
+)
+
+wilcox_table <- do.call(rbind, wilcox_results) %>%
+  mutate(p_adj = round(p.adjust(p_raw, method = "BH"), 3))
+
+wilcox_table
+```
+
+### Figure: movement frequency by light condition and movement type
+
+```{r control-count-plot, fig.height=5}
+desired_order <- c("rot", "stalk", "calyx", "full")
+count_data_fixed$type <- factor(count_data_fixed$type, levels = desired_order)
+
+type_labels_full <- c(rot   = "Calyx rotation",
+                      stalk = "Stalk contraction",
+                      calyx = "Calyx contraction",
+                      full  = "Full contraction")
+
+# Annotation labels derived programmatically from wilcox_table (p_adj)
+annotations_count <- wilcox_table %>%
+  mutate(
+    type  = factor(type, levels = desired_order),
+    label = paste0("p = ", p_adj),
+    y = sapply(as.character(type), function(mv) {
+      max(count_data_fixed$n[count_data_fixed$type == mv]) + 1.5
+    })
+  )
+
+p_count_stats <- ggplot(count_data_fixed,
+                        aes(x = light, y = n, fill = type)) +
+  geom_boxplot(alpha = 0.9, linewidth = 0.4,
+               outlier.shape = NA, width = 0.5, color = "gray20") +
+  geom_jitter(width = 0.3, height = 0, alpha = 0.4, size = 2) +
+  facet_wrap(~type, scales = "free_y",
+             labeller = as_labeller(type_labels_full)) +
+  geom_text(data = annotations_count,
+            aes(label = label, x = 1.5, y = y),
+            inherit.aes = FALSE, size = 4, fontface = "bold") +
+  scale_fill_manual(values = type_colors) +
+  scale_x_discrete(labels = c(br = "Bright", dim = "Dim")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)),
+                     name = "Number of movements") +
+  labs(x = NULL) +
+  shared_theme
+
+print(p_count_stats)
+ggsave("figures/control_count_stats.png", p_count_stats,
+       width = 7, height = 7, dpi = 500)
+ggsave("figures/control_count_stats.svg", p_count_stats,
+       width = 7, height = 7, dpi = 500)
+```
+
+---
+
+# 4. Stimulus Experiment
+
+## 4.1 Data description and preparation
+
+The stimulus experiment dataset (`experiment.xlsx`) contains **60 trials** distributed across **9 experimental sessions** (`exp_no`: exp1–exp8 and exp_test). Each session was conducted on a single day and involved one or more specimens. The same specimen could appear in multiple sessions on different days; however, because each trial was separated from the previous one by a full relaxation interval, trials are treated as functionally independent observations.
+
+The design is balanced with respect to light × region: each combination received exactly 10 trials (3 light levels × 2 regions × 10 trials = 60 total). Session sizes range from 1 to 14 trials. Two stimulus durations were used within sessions (10 s and 30 s) and are included as a covariate (`time`) in the initial candidate models.
+
+**Variables:**
+
+| Column         | Type      | Description |
+|----------------|-----------|-------------|
+| `exp_no`       | factor    | Experimental session ID (9 levels) |
+| `exp_ID`       | character | Unique trial identifier |
+| `region`       | factor    | Body region stimulated: `calyx` or `stalk` |
+| `light`        | factor    | Light colour: `R` (red), `G` (green), `V` (violet) |
+| `time`         | factor    | Stimulus duration: `10` s or `30` s |
+| `react`        | integer   | Binary: 1 = any motor response, 0 = no response |
+| `react_no_rot` | integer   | Binary: 1 = response excluding isolated calyx rotation |
+| `react_type`   | character | Type of motor response (if `react = 1`) |
+
+```{r exp-load}
+exp_data <- read_excel("data/experiment.xlsx")
+
+exp_data_clean <- exp_data %>%
+  mutate(
+    react         = as.integer(react),
+    react_no_rot  = as.integer(react_no_rot),
+    light         = factor(light,  levels = c("R", "G", "V")),
+    region        = factor(region, levels = c("calyx", "stalk")),
+    time          = factor(time,   levels = c("10", "30")),
+    exp_no        = factor(exp_no)
+  )
+
+cat("Trials per light × region combination:\n")
+table(exp_data_clean$light, exp_data_clean$region)
+
+cat("\nObserved response rates (react = 1) per light condition:\n")
+exp_data_clean %>%
+  group_by(light) %>%
+  summarise(
+    n_trials   = n(),
+    n_response = sum(react),
+    prop       = round(mean(react), 3),
+    .groups = "drop"
+  )
+
+cat("\nObserved response rates (react_no_rot = 1) per light condition:\n")
+exp_data_clean %>%
+  group_by(light) %>%
+  summarise(
+    n_trials   = n(),
+    n_response = sum(react_no_rot),
+    prop       = round(mean(react_no_rot), 3),
+    .groups = "drop"
+  )
+```
+
+## 4.2 Model 1 - Response probability (including calyx rotation)
+
+The response variable `react` is binary (0/1) and is modeled using logistic regression. The analysis proceeds in three steps:
+
+1. Test whether between-session clustering requires a mixed model (GLMM).
+2. Select fixed effects using AIC comparison of candidate models.
+3. Fit the final model with bias-reduced estimation to handle complete separation.
+
+### Step 1 - Test for session-level clustering (GLMM vs. GLM)
+
+Trials are nested within experimental sessions (`exp_no`). Although specimens were allowed to fully relax between trials, unmeasured session-level factors (e.g., water temperature, time of day) could introduce within-session correlation. A GLMM with a random intercept for `exp_no` is fitted to test this explicitly: if the estimated between-session variance is zero (singular fit, ICC = NA), an ordinary GLM is sufficient.
+
+```{r mod1-glmm-check}
+mod1_glmm <- glmer(
+  react ~ light * region + time + (1 | exp_no),
+  data    = exp_data_clean,
+  family  = binomial,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+
+summary(mod1_glmm)
+
+# ICC = NA confirms singular fit: no detectable between-session clustering
+# All subsequent Model 1 candidates are therefore fit as standard GLMs
+icc(mod1_glmm)
+```
+
+### Step 2 - Fixed-effect selection by AIC
+
+Model selection by sequential significance testing (backward elimination) is avoided because it inflates the type I error rate when applied repeatedly to the same dataset. Instead, all candidate models are built simultaneously and compared by AIC; when ΔAIC < 2 between models, the simpler model is preferred on parsimony grounds.
+
+```{r mod1-aic-selection}
+m1_full    <- glm(react ~ light * region + time, data = exp_data_clean, family = binomial)
+m1_no_int  <- glm(react ~ light + region + time, data = exp_data_clean, family = binomial)
+m1_no_time <- glm(react ~ light + region,        data = exp_data_clean, family = binomial)
+m1_light   <- glm(react ~ light,                 data = exp_data_clean, family = binomial)
+
+aic1 <- AIC(m1_full, m1_no_int, m1_no_time, m1_light)
+aic1$delta_AIC <- round(aic1$AIC - min(aic1$AIC), 2)
+aic1[order(aic1$AIC), ]
+
+# m1_light has the lowest AIC (ΔAIC = 0)
+# Neither region, time, nor their interaction with light improves model fit. 
+# Final Model 1: react ~ light.
+```
+
+### Step 3 - Final model with bias-reduced estimation
+
+All 20 violet-light trials resulted in a response (`react = 1`), causing complete separation: the standard MLE coefficient for `lightV` diverges to +∞. Bias-reduced logistic regression (`brglmFit`, Kosmidis & Firth 2021) produces finite, consistent estimates under complete or quasi-complete separation and is therefore used for the final model.
+
+```{r mod1-final}
+mod1_final <- glm(
+  react ~ light,
+  data   = exp_data_clean,
+  family = binomial,
+  method = "brglmFit"
+)
+
+summary(mod1_final)
+
+# Type III likelihood-ratio tests
+Anova(mod1_final, type = "III")
+```
+
+### Residual diagnostics
+
+```{r mod1-diagnostics, fig.height=4}
+# DHARMa simulation-based residuals are appropriate for binary GLMs, where raw Pearson residuals are uninformative
+sim1 <- simulateResiduals(fittedModel = mod1_final, plot = TRUE)
+
+# Grouped residuals test: if trials within a session share unexplained variance, grouped residuals will deviate from uniformity - this would indicate that the GLM decision in Step 1 was incorrect
+sim1_grouped <- recalculateResiduals(sim1, group = exp_data_clean$exp_no)
+plot(sim1_grouped, main = "Grouped residuals by session (exp_no)")
+
+testDispersion(sim1)
+
+# KS p = 0.36, dispersion p = 0.72 (stat = 0.945), outlier p = 1, grouped KS p = 0.89 - all diagnostics satisfactory; GLM decision confirmed.
+```
+
+### Estimated marginal means and pairwise contrasts
+
+Pairwise odds ratios and 95 % CIs are computed on the probability scale.
+P-values are adjusted for multiple comparisons using the Tukey method.
+
+```{r mod1-emmeans}
+em1 <- emmeans(mod1_final, ~ light, type = "response")
+print(em1)
+
+# Pairwise contrasts (Tukey-adjusted odds ratios)
+pairs(em1, type = "response")
+
+# Response probability increases monotonically: R = 21.4%, G = 59.5%, V = 97.6%.
+# R vs G: OR = 0.185, p = 0.047*; R vs V: OR = 0.007, p = 0.004**;
+# G vs V: OR = 0.036, p = 0.077 (large effect size, likely underpowered)
+```
+
+## 4.3 Model 2 - Response probability (excluding calyx rotation)
+
+Isolated calyx rotation may represent a non-specific startle reflex rather than a directed photic response. Model 2 uses `react_no_rot` as the outcome, counting only trials where the response involved movements beyond simple calyx rotation (stalk contraction, calyx contraction, full contraction, or detachment). This provides a conservative test of spectral sensitivity. The same three-step procedure is applied as in Section 4.2.
+
+### Step 1 - Test for session-level clustering
+
+```{r mod2-glmm-check}
+mod2_glmm <- glmer(
+  react_no_rot ~ light * region + time + (1 | exp_no),
+  data    = exp_data_clean,
+  family  = binomial,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+
+mod2_glm_full <- glm(
+  react_no_rot ~ light * region + time,
+  data   = exp_data_clean,
+  family = binomial
+)
+
+icc(mod2_glmm)
+AIC(mod2_glmm, mod2_glm_full)
+
+# Adjusted ICC = 0.309 reflects confounding between light condition and session composition (different sessions contributed different light conditions), not genuine within-session correlation of residuals.
+# Formal AIC comparison: ΔAIC = 1.19 in favour of the GLM. The random intercept does not improve fit; we proceed to GLM for candidate model selection.
+# Note: for boundary tests (variance ≥ 0), the LRT p-value from anova() is conservative; halving it would only strengthen the conclusion to retain GLM.
+```
+
+### Step 2 - Fixed-effect selection by AIC
+
+```{r mod2-aic-selection}
+m2_full    <- glm(react_no_rot ~ light * region + time, data = exp_data_clean, family = binomial)
+m2_no_int  <- glm(react_no_rot ~ light + region + time, data = exp_data_clean, family = binomial)
+m2_no_time <- glm(react_no_rot ~ light + region,        data = exp_data_clean, family = binomial)
+m2_light   <- glm(react_no_rot ~ light,                 data = exp_data_clean, family = binomial)
+
+aic2 <- AIC(m2_full, m2_no_int, m2_no_time, m2_light)
+aic2$delta_AIC <- round(aic2$AIC - min(aic2$AIC), 2)
+aic2[order(aic2$AIC), ]
+
+# m2_light has the lowest AIC (ΔAIC = 0). region, time, and the interaction all increase AIC # Final candidate: react_no_rot ~ light
+```
+
+### Step 3 - Final model
+
+```{r mod2-final}
+# Check for complete separation before choosing estimation method
+cat("Response counts per light condition (react_no_rot):\n")
+table(exp_data_clean$light, exp_data_clean$react_no_rot)
+
+# brglmFit applied for consistency with Model 1; re-evaluate if no separation is detected in future data updates
+mod2_final <- glm(
+  react_no_rot ~ light,
+  data   = exp_data_clean,
+  family = binomial,
+  method = "brglmFit"
+)
+
+summary(mod2_final)
+Anova(mod2_final, type = "III")
+```
+
+### Residual diagnostics
+
+```{r mod2-diagnostics, fig.height=4}
+sim2 <- simulateResiduals(fittedModel = mod2_final, plot = TRUE)
+
+sim2_grouped <- recalculateResiduals(sim2, group = exp_data_clean$exp_no)
+plot(sim2_grouped, main = "Grouped residuals by session (exp_no) - GLM")
+
+testDispersion(sim2)
+
+# Grouped residuals show significant quantile deviations (red curves): the upper quantile deviates systematically, indicating residual within-session clustering that the GLM does not capture
+```
+
+Although AIC marginally favoured the GLM (ΔAIC = 1.19), grouped residual diagnostics detected significant quantile deviations by session under the GLM, indicating that between-session variance in react_no_rot is real and not captured by fixed effects alone. When model selection criteria and residual diagnostics conflict, diagnostics take priority: AIC measures predictive fit, but the goal here is valid inference on the fixed effect of light, which requires a correctly specified error structure.
+
+The contrast with Model 1 is informative: calyx rotation - the dominant response to green light - was the main source of light-condition signal in react. Once rotation is excluded, the green-light effect weakens and genuine between-session variability becomes detectable. AIC alone would have missed this.
+
+```{r mod2-final-glmm}
+mod2_final <- glmer(
+  react_no_rot ~ light + (1 | exp_no),
+  data    = exp_data_clean,
+  family  = binomial,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+
+summary(mod2_final)
+Anova(mod2_final, type = "III")
+```
+
+### Residual diagnostics - GLMM
+
+```{r mod2-diagnostics-glmm, fig.height=4}
+sim2 <- simulateResiduals(fittedModel = mod2_final, plot = TRUE)
+
+sim2_grouped <- recalculateResiduals(sim2, group = exp_data_clean$exp_no)
+plot(sim2_grouped, main = "Grouped residuals by session (exp_no) - GLMM")
+
+testDispersion(sim2)
+
+# Grouped residuals are clean after including the random intercept: no quantile deviations detected
+# Random-effect variance σ² = 0.964 confirms that between-session variability is real. Fixed effects (Type III Wald χ²):
+# light χ² = 10.99, df = 2, p = 0.004. lightV significant (p = 0.003);
+# lightG does not differ from R (p = 0.380) when calyx rotation is excluded
+```
+
+### Estimated marginal means and pairwise contrasts
+
+```{r mod2-emmeans}
+em2 <- emmeans(mod2_final, ~ light, type = "response")
+print(em2)
+
+pairs(em2, type = "response")
+```
+
+## 4.4 Figure: predicted response probabilities
+
+Predicted probabilities and 95 % CIs are extracted from fitted models via `emmeans`. Pairwise comparisons shown on the figure use Tukey-adjusted p-values and odds ratios computed programmatically from the contrast objects.
+
+```{r exp-prob-plot, fig.height=9}
+# Helper: format OR and p-value label from emmeans contrast object
+# OR is inverted so it reads as "how many times more likely" (always > 1)
+format_contrast <- function(em_obj) {
+  ct <- as.data.frame(pairs(em_obj, type = "response"))
+  ct %>%
+    mutate(
+      or_display = 1 / odds.ratio,
+      or_label   = ifelse(or_display >= 10,
+                          round(or_display, 0),
+                          round(or_display, 1)),
+      p_label    = ifelse(p.value < 0.001, "< 0.001",
+                          as.character(round(p.value, 3))),
+      sig        = ifelse(p.value < 0.05, "*", ""),
+      label      = paste0("OR = ", or_label, "\n(p = ", p_label, ")", sig),
+      grp1       = sapply(strsplit(as.character(contrast), " / "), `[`, 1),
+      grp2       = sapply(strsplit(as.character(contrast), " / "), `[`, 2)
+    )
+}
+
+ct1 <- format_contrast(em1)
+ct2 <- format_contrast(em2)
+
+# Panel A: including calyx rotation
+plot1 <- as.data.frame(em1) %>%
+  mutate(light = factor(light, levels = c("R", "G", "V")))
+
+pR1 <- ggplot(plot1, aes(x = light, y = prob, color = light)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),
+                width = 0.1, linewidth = 1) +
+  geom_point(size = 5) +
+  geom_text(aes(label = paste0(round(prob * 100, 1), "%")),
+            vjust = 2.2, nudge_x = 0.17, size = 4,
+            color = "black", fontface = "bold") +
+  geom_signif(
+    comparisons = list(c("R", "G"), c("G", "V"), c("R", "V")),
+    annotations = ct1$label,
+    y_position  = c(0.72, 0.85, 0.98),
+    tip_length  = 0.01,
+    color = "black", textsize = 3.2
+  ) +
+  scale_color_manual(values = light_colors) +
+  scale_x_discrete(labels = c(R = "Red", G = "Green", V = "Violet")) +
+  scale_y_continuous(
+    limits = c(0, 1.15),
+    labels = scales::percent_format(accuracy = 1),
+    name   = "Response probability"
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(title = "A. Including calyx rotation", x = NULL) +
+  shared_theme
+
+# Panel B: excluding calyx rotation
+plot2 <- as.data.frame(em2) %>%
+  mutate(light = factor(light, levels = c("R", "G", "V")))
+
+pR2 <- ggplot(plot2, aes(x = light, y = prob, color = light)) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL),
+                width = 0.1, linewidth = 1) +
+  geom_point(size = 5) +
+  geom_text(aes(label = paste0(round(prob * 100, 1), "%")),
+            vjust = 2.2, nudge_x = 0.17, size = 4,
+            color = "black", fontface = "bold") +
+  geom_signif(
+    comparisons = list(c("R", "G"), c("G", "V"), c("R", "V")),
+    annotations = ct2$label,
+    y_position  = c(0.72, 0.85, 0.98),
+    tip_length  = 0.01,
+    color = "black", textsize = 3.2
+  ) +
+  scale_color_manual(values = light_colors) +
+  scale_x_discrete(labels = c(R = "Red", G = "Green", V = "Violet")) +
+  scale_y_continuous(
+    limits = c(0, 1.15),
+    labels = scales::percent_format(accuracy = 1),
+    name   = "Response probability"
+  ) +
+  coord_cartesian(clip = "off") +
+  labs(title = "B. Excluding calyx rotation", x = NULL) +
+  shared_theme
+
+combined_probs <- pR1 / pR2
+print(combined_probs)
+ggsave("figures/exp_probs.png", combined_probs, width = 7, height = 9, dpi = 500)
+ggsave("figures/exp_probs.svg", combined_probs, width = 7, height = 9, dpi = 500)
+```
+
+## 4.5 Figure: response types by light spectrum and body region
+
+```{r exp-type-plot, fig.height=5}
+react_labels <- c(
+  rot   = "Calyx\nrotation",
+  stalk = "Stalk\ncontraction",
+  full  = "Full\ncontraction",
+  calyx = "Calyx\ncontraction",
+  fall  = "Detachment"
+)
+
+bar_data <- exp_data_clean %>%
+  filter(react == 1, !is.na(react_type),
+         region %in% c("calyx", "stalk")) %>%
+  count(light, region, react_type) %>%
+  mutate(
+    react_type = factor(react_type,
+                        levels = c("rot", "stalk", "calyx", "full", "fall"))
+  )
+
+p_types <- ggplot(bar_data, aes(x = react_type, y = n, fill = react_type)) +
+  geom_col(width = 0.7, alpha = 0.9, color = "gray20") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3.5, fontface = "bold") +
+  facet_grid(region ~ light,
+             labeller = labeller(
+               region = as_labeller(c(calyx = "Calyx", stalk = "Stalk")),
+               light  = as_labeller(c(R = "Red", G = "Green", V = "Violet"))
+             )) +
+  scale_fill_manual(values = type_colors, labels = react_labels,
+                    name = "Response type") +
+  scale_x_discrete(labels = react_labels) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2)),
+                     name = "Number of responses") +
+  labs(x = NULL) +
+  shared_theme
+
+print(p_types)
+ggsave("figures/exp_count.png", p_types, width = 13, height = 8, dpi = 500)
+ggsave("figures/exp_count.svg", p_types, width = 13, height = 8, dpi = 500)
+```
+
+## 4.6 Effect of stimulated body region on response type: Fisher's exact tests
+
+The binary models established that light color predicts whether a motor response occurs. To examine whether the stimulated body region (calyx and stalk) additionally shapes the type of response, we applied Fisher's exact tests separately for each light condition, each testing the null hypothesis that the distribution of response types is independent of the stimulated region. 
+Fisher's exact test was chosen over the chi-squared test because most cells in the contingency tables contained fewer than five observations, violating the assumptions of the asymptotic approximation. Monte Carlo p-values (2000 permutations) were used for all tables larger than 2×2, and raw p-values were adjusted for multiple comparisons using the Benjamini–Hochberg procedure. Due to the small number of trials per light × region combination (n = 10), statistical power was limited.
+
+```{r data-prep}
+exp_data_clean <- exp_data %>%
+  mutate(
+    react        = as.integer(react),
+    react_no_rot = as.integer(react_no_rot),
+    light        = factor(light,  levels = c("R", "G", "V")),
+    region       = factor(region, levels = c("calyx", "stalk")),
+    time         = factor(time,   levels = c("10", "30")),
+    exp_no       = factor(exp_no),
+    # Trials with no response (react == 0) have NA in react_type
+    # "none" is retained as a category: excluding non-responders would
+    # bias the comparison, because the probability of responding at all
+    # differs between regions and light conditions
+    react_type_full = factor(
+      ifelse(is.na(react_type), "none", react_type),
+      levels = c("none", "rot", "stalk", "calyx", "full", "fall")
+    )
+  )
+```
+
+### Contingency tables
+
+Before testing, we inspect the observed counts for each light condition.
+
+```{r contingency-tables}
+# Build one contingency table per light condition: rows = region, cols = react_type
+tables_by_light <- lapply(levels(exp_data_clean$light), function(lv) {
+  sub <- exp_data_clean %>% filter(light == lv)
+  tab <- table(Region = sub$region, Response = sub$react_type_full)
+  # Drop columns that are all zero — structurally absent response types
+  # have no contribution to the test and clutter the output
+  tab <- tab[, colSums(tab) > 0, drop = FALSE]
+  tab
+})
+names(tables_by_light) <- levels(exp_data_clean$light)
+
+cat("Red light\n");   print(tables_by_light[["R"]])
+cat("\nGreen light\n"); print(tables_by_light[["G"]])
+cat("\nViolet light\n");print(tables_by_light[["V"]])
+```
+
+### Applicability checks
+
+Fisher's exact test requires only that:
+1. Observations are independent.
+2. The marginal totals (row sums and column sums) are fixed or treated as fixed.
+
+```{r applicability}
+for (lv in names(tables_by_light)) {
+  tab <- tables_by_light[[lv]]
+  n_zero  <- sum(tab == 0)
+  n_small <- sum(tab > 0 & tab < 5)
+  n_total <- sum(tab)
+  cat(sprintf(
+    "Light = %s | n = %d | zero cells: %d | cells with 1–4 obs: %d | cells ≥ 5: %d\n",
+    lv, n_total, n_zero, n_small, sum(tab >= 5)
+  ))
+}
+```
+
+### Fisher's exact tests
+
+We apply Fisher's exact test separately for each light condition. The null hypothesis in each case: the distribution of response types is independent of the stimulated body region (calyx vs. stalk).
+
+`simulate.p.value = TRUE` uses Monte Carlo permutation (2000 replicates) to compute p-values for tables larger than 2×2. This is more reliable than the asymptotic approximation when cell counts are small.
+
+```{r fisher-tests}
+set.seed(42)  # for reproducibility of Monte Carlo p-values
+
+fisher_results <- lapply(names(tables_by_light), function(lv) {
+  tab <- tables_by_light[[lv]]
+  ft  <- fisher.test(tab, simulate.p.value = TRUE, B = 2000)
+  data.frame(
+    light       = lv,
+    n_trials    = sum(tab),
+    n_categories = ncol(tab),
+    p_value     = round(ft$p.value, 4),
+    method      = ft$method
+  )
+})
+
+fisher_table <- do.call(rbind, fisher_results)
+
+# Benjamini-Hochberg FDR correction for three simultaneous tests - consistent with the correction used for Wilcoxon tests in Section 3.2
+fisher_table$p_adj_BH <- round(p.adjust(fisher_table$p_value, method = "BH"), 4)
+
+fisher_table$significance <- case_when(
+  fisher_table$p_adj_BH < 0.001 ~ "***",
+  fisher_table$p_adj_BH < 0.01  ~ "**",
+  fisher_table$p_adj_BH < 0.05  ~ "*",
+  fisher_table$p_adj_BH < 0.1   ~ ".",
+  TRUE                           ~ "ns"
+)
+
+fisher_table
+
+write_xlsx(fisher_table, "results/fisher_region_results.xlsx")
+```
+
+### Heatmap
+
+```{r fig-heatmap, fig.height=6, fig.width=9}
+heatmap_data <- exp_data_clean %>%
+  count(light, region, react_type_full) %>%
+  # Ensure all combinations are present, including structural zeros
+  complete(light, region, react_type_full, fill = list(n = 0)) %>%
+  mutate(
+    react_type_full = factor(react_type_full,
+                             levels = c("none", "rot", "stalk",
+                                        "calyx", "full", "fall")),
+    light  = factor(light,  levels = c("R", "G", "V")),
+    region = factor(region, levels = c("calyx", "stalk"))
+  )
+
+react_type_labels <- c(
+  none  = "No response",
+  rot   = "Calyx rotation",
+  stalk = "Stalk contraction",
+  calyx = "Calyx contraction",
+  full  = "Full contraction",
+  fall  = "Detachment"
+)
+
+light_labels <- c(R = "Red light", G = "Green light", V = "Violet light")
+region_labels <- c(calyx = "Calyx", stalk = "Stalk")
+
+pA_fisher <- ggplot(heatmap_data,
+                    aes(x = region, y = react_type_full, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = n), size = 4.5, fontface = "bold",
+            color = ifelse(heatmap_data$n > 4, "white", "gray20")) +
+  facet_wrap(~ light, ncol = 3,
+             labeller = as_labeller(light_labels)) +
+  scale_fill_gradient(
+    low  = "gray95",
+    high = "gray20",
+    name = "Count",
+    limits = c(0, NA)
+  ) +
+  scale_x_discrete(labels = region_labels) +
+  scale_y_discrete(
+    labels = react_type_labels,
+    limits = rev(levels(heatmap_data$react_type_full))
+  ) +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    legend.position  = "right",
+    strip.background = element_rect(fill = "gray95"),
+    strip.text       = element_text(size = 11, face = "bold"),
+    axis.text.x      = element_text(size = 10),
+    axis.text.y      = element_text(size = 10),
+    plot.title       = element_text(size = 12, face = "bold"),
+    panel.grid       = element_blank()
+  )
+
+print(pA_fisher)
+
+ggsave("figures/exp_heatmap.png", p_types, width = 13, height = 8, dpi = 500)
+ggsave("figures/exp_heatmap.svg", p_types, width = 13, height = 8, dpi = 500)
+```
+
+---
+
+# 5. Session Info
+
+```{r session-info}
+sessionInfo()
+```
