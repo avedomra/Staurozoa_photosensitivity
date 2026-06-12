@@ -467,6 +467,10 @@ wilcox_table <- do.call(rbind, wilcox_results) %>%
   mutate(p_adj = round(p.adjust(p_raw, method = "BH"), 3))
 
 wilcox_table
+
+count_data_fixed %>%
+  group_by(light, type) %>%
+  summarise(median = median(n), mean = round(mean(n), 1), .groups = "drop")
 ```
 
 ### Figure: movement frequency by light condition and movement type
@@ -1084,8 +1088,8 @@ pA_fisher <- ggplot(heatmap_data,
 
 print(pA_fisher)
 
-ggsave("figures/exp_heatmap.png", p_types, width = 13, height = 8, dpi = 500)
-ggsave("figures/exp_heatmap.svg", p_types, width = 13, height = 8, dpi = 500)
+ggsave("figures/exp_heatmap.png", pA_fisher, width = 10, height = 8, dpi = 500)
+ggsave("figures/exp_heatmap.svg", pA_fisher, width = 10, height = 8, dpi = 500)
 ```
 
 ---
