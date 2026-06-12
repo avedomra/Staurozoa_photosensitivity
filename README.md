@@ -1,6 +1,6 @@
-# Light Response in Stalked Jellyfish (*Haliclystus* sp.): Behavioural Analysis
+# Light Response in Stalked Jellyfish (*Haliclystus auricula*): Behavioural Analysis
 
-This repository contains the data, analysis script, and output figures/tables for a study of light-evoked behaviour in stalked jellyfish (Stauromedusae, *Haliclystus* sp.). It accompanies the corresponding manuscript.
+This repository contains the data, analysis script, and output figures/tables for a study of light-evoked behaviour in stalked jellyfish (Staurozao, *Haliclystus auricula*). It accompanies the corresponding manuscript.
 
 The analysis covers two parts:
 
