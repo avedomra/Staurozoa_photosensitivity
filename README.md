@@ -1,4 +1,4 @@
-# Light Response in Stalked Jellyfish (*Haliclystus auricula*): Behavioural Analysis
+# Life without eyes: behavioral evidence of photoreception in a stalked jellyfish *Haliclystus auricula* (Staurozoa)
 
 This repository contains the data, analysis script, and output figures/tables for a study of light-evoked behaviour in stalked jellyfish (Staurozao, *Haliclystus auricula*). It accompanies the corresponding manuscript.
 
